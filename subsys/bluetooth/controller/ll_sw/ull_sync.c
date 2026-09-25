@@ -75,6 +75,8 @@
  */
 MEM_FREE_MEMBER_ACCESS_BUILD_ASSERT(struct ll_sync_set, timeout_reload);
 
+#define SYNC_ESTAB_FORCE_COUNTDOWN (CONN_ESTAB_COUNTDOWN >> 1)
+
 static struct ll_sync_set *ull_sync_create(uint8_t sid, uint16_t timeout, uint16_t skip,
 					   uint8_t cte_type, uint8_t rx_enable, uint8_t nodups);
 static int init_reset(void);
@@ -1384,6 +1386,17 @@ void ull_sync_done(struct node_rx_event_done *done)
 
 				return;
 			}
+		}
+
+		/* Force the last half of the attempts to establish sync, so
+		 * that other roles overlapping each periodic event do not
+		 * preempt all of them.
+		 */
+		if ((sync->sync_expire != 0U) &&
+		    (sync->sync_expire <= SYNC_ESTAB_FORCE_COUNTDOWN)) {
+			force_lll = 1U;
+
+			force = 1U;
 		}
 
 		lll->forced = force_lll;
