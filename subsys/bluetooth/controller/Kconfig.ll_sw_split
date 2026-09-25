@@ -494,10 +494,11 @@ config BT_CTLR_ADV_AUX_FOLLOW_PRIMARY
 	depends on BT_BROADCASTER && BT_CTLR_ADV_EXT && \
 		   (BT_CTLR_ADV_AUX_SET > 0) && \
 		   !BT_OBSERVER && \
-		   !BT_CTLR_ADV_PERIODIC && \
 		   !BT_CTLR_JIT_SCHEDULING && \
 		   !BT_CTLR_LOW_LAT && \
 		   !BT_TICKER_LOW_LAT
+	depends on !BT_CTLR_ADV_PERIODIC || !BT_TICKER_EXT_EXPIRE_INFO
+	depends on !BT_CTLR_ADV_PERIODIC || BT_CTLR_ADV_AUX_SYNC_OFFSET = 0
 	depends on !BT_CTLR_CONN_ISO && !BT_CTLR_ADV_ISO && !BT_CTLR_SYNC_ISO
 	select EXPERIMENTAL
 	help
@@ -508,6 +509,9 @@ config BT_CTLR_ADV_AUX_FOLLOW_PRIMARY
 
 	  Advertising sets with a non-zero max skip use the independent
 	  auxiliary event scheduling.
+
+	  With Periodic Advertising, BT_CTLR_ADV_AUX_SYNC_OFFSET has to be 0
+	  and BT_TICKER_EXT_EXPIRE_INFO disabled.
 
 config BT_CTLR_ADV_AUX_FOLLOW_PRIMARY_AFS
 	int "AUX Frame Space after the last primary channel PDU"

@@ -545,9 +545,36 @@ uint8_t ll_adv_sync_enable(uint8_t handle, uint8_t enable)
 					    EVENT_OVERHEAD_START_US) -
 					EVENT_OVERHEAD_START_US +
 					(EVENT_TICKER_RES_MARGIN_US << 1));
+			} else if (IS_ENABLED(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)) {
+				/* Anchor not found, use current ticks */
+				ticks_anchor_sync = ticker_ticks_now_get() +
+					HAL_TICKER_US_TO_TICKS(EVENT_OVERHEAD_START_US);
 			}
 #endif /* CONFIG_BT_CTLR_SCHED_ADVANCED */
 
+		} else if (ull_adv_aux_follow_init(adv, HDR_LLL2ULL(adv->lll.aux))) {
+			struct pdu_adv *chan_res_pdu;
+			uint8_t tmp_idx;
+
+			/* Primary channel events start the auxiliary event */
+			lll_aux = adv->lll.aux;
+			aux = HDR_LLL2ULL(lll_aux);
+			ticks_anchor_aux = 0U; /* unused in this path */
+			ticks_slot_overhead_aux = 0U; /* unused in this path */
+
+			/* Update time reservation before the PDU with AuxPtr
+			 * is enqueued
+			 */
+			chan_res_pdu = lll_adv_data_alloc(&adv->lll, &tmp_idx);
+			err = ull_adv_time_update(adv, chan_res_pdu, NULL);
+			if (err) {
+				return err;
+			}
+
+			ARG_UNUSED(tmp_idx);
+
+			ticks_anchor_sync = ticker_ticks_now_get() +
+				HAL_TICKER_US_TO_TICKS(EVENT_OVERHEAD_START_US);
 		} else {
 			/* Auxiliary set will be started due to inclusion of
 			 * sync info field.
@@ -590,7 +617,10 @@ uint8_t ll_adv_sync_enable(uint8_t handle, uint8_t enable)
 		lll_adv_aux_data_enqueue(lll_aux, sec_idx);
 		lll_adv_data_enqueue(&adv->lll, pri_idx);
 
-		if (aux) {
+		if (aux && ull_adv_aux_follow_is_eligible(adv)) {
+			ull_adv_aux_follow_start(aux);
+
+		} else if (aux) {
 			/* Keep aux interval equal or higher than primary PDU
 			 * interval.
 			 * Use periodic interval units to represent the

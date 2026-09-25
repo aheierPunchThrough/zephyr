@@ -1387,10 +1387,54 @@ uint8_t ll_adv_enable(uint8_t enable)
 		    ull_adv_aux_follow_init(adv, HDR_LLL2ULL(lll->aux))) {
 			aux = HDR_LLL2ULL(lll->aux);
 
+#if defined(CONFIG_BT_CTLR_ADV_PERIODIC)
+			/* Enqueue the PDU with AuxPtr, used for time reservation */
+			if (sync) {
+				lll_adv_aux_data_enqueue(adv->lll.aux, sec_idx);
+				lll_adv_data_enqueue(lll, pri_idx);
+			}
+#endif /* CONFIG_BT_CTLR_ADV_PERIODIC */
+
 			/* Include the auxiliary event in time reservation */
 			adv->ull.ticks_slot =
-				ull_adv_aux_follow_ticks_slot(adv, pdu_adv);
+				ull_adv_aux_follow_ticks_slot(adv,
+							      lll_adv_data_peek(lll));
 			ticks_slot = adv->ull.ticks_slot + ticks_slot_overhead;
+
+#if defined(CONFIG_BT_CTLR_ADV_PERIODIC)
+			if (sync) {
+				uint32_t ticks_slot_overhead2;
+				uint32_t ticks_anchor_sync;
+				uint32_t ticks_slot_train;
+
+				/* Start Periodic Advertising after the auxiliary event */
+				ticks_slot_train = ticks_slot;
+#if defined(CONFIG_BT_CTLR_ADV_RESERVE_MAX)
+				ticks_slot_train += HAL_TICKER_US_TO_TICKS_CEIL(
+					ull_adv_aux_time_get(aux,
+							     PDU_AC_PAYLOAD_SIZE_MAX,
+							     PDU_AC_PAYLOAD_SIZE_MAX)) -
+					aux->ull.ticks_slot;
+#endif /* CONFIG_BT_CTLR_ADV_RESERVE_MAX */
+
+				ticks_anchor_sync = ticks_anchor + ticks_slot_train +
+					HAL_TICKER_US_TO_TICKS(
+						MAX(EVENT_MAFS_US,
+						    EVENT_OVERHEAD_START_US) -
+						EVENT_OVERHEAD_START_US +
+						(EVENT_TICKER_RES_MARGIN_US << 1));
+
+				ticks_slot_overhead2 = ull_adv_sync_evt_init(adv, sync, NULL);
+				ret = ull_adv_sync_start(adv, sync,
+							 ticks_anchor_sync,
+							 ticks_slot_overhead2);
+				if (ret) {
+					goto failure_cleanup;
+				}
+
+				sync_is_started = 1U;
+			}
+#endif /* CONFIG_BT_CTLR_ADV_PERIODIC */
 
 			/* Primary channel events start the auxiliary event */
 			ull_adv_aux_follow_start(aux);
