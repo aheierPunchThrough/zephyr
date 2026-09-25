@@ -71,6 +71,10 @@ static void isr_rx(void *param);
 static void isr_done(void *param);
 static void isr_abort(void *param);
 static struct pdu_adv *chan_prepare(struct lll_adv *lll);
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+static bool follow_aux_offset_is_valid(const struct lll_adv_aux *lll_aux,
+				       uint32_t start_us, uint32_t pdu_us);
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 static inline int isr_rx_pdu(struct lll_adv *lll,
 			     uint8_t devmatch_ok, uint8_t devmatch_id,
