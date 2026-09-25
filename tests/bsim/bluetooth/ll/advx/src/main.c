@@ -1073,6 +1073,65 @@ static void test_advx_main(void)
 	}
 	printk("success.\n");
 
+	if (IS_ENABLED(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)) {
+		/* Coded PHY primary channel, and a non-zero max skip */
+		printk("Disabling...");
+		err = ll_adv_enable(handle, 0, 0, 0);
+		if (err) {
+			goto exit;
+		}
+		printk("success.\n");
+
+		printk("Starting non-conn non-scan with aux Coded advertising...");
+		err = ll_adv_params_set(handle, EVT_PROP_TXP, ADV_INTERVAL,
+					0x07, OWN_ADDR_TYPE, PEER_ADDR_TYPE,
+					PEER_ADDR, ADV_CHAN_MAP, FILTER_POLICY,
+					ADV_TX_PWR, ADV_PHY_CODED, ADV_SEC_SKIP,
+					ADV_PHY_2M, ADV_SID, SCAN_REQ_NOT);
+		if (err) {
+			goto exit;
+		}
+
+		err = ll_adv_aux_ad_data_set(handle, AD_OP, AD_FRAG_PREF,
+					     sizeof(adv_data), (void *)adv_data);
+		if (err) {
+			goto exit;
+		}
+
+		err = ll_adv_enable(handle, 1, 0, 0);
+		if (err) {
+			goto exit;
+		}
+		printk("success.\n");
+
+		k_sleep(K_MSEC(400));
+
+		printk("Disabling...");
+		err = ll_adv_enable(handle, 0, 0, 0);
+		if (err) {
+			goto exit;
+		}
+		printk("success.\n");
+
+		printk("Starting non-conn non-scan with aux 1M advertising, max skip 1...");
+		err = ll_adv_params_set(handle, EVT_PROP_TXP, ADV_INTERVAL,
+					0x07, OWN_ADDR_TYPE, PEER_ADDR_TYPE,
+					PEER_ADDR, ADV_CHAN_MAP, FILTER_POLICY,
+					ADV_TX_PWR, ADV_PHY_1M, 1U, ADV_PHY_2M,
+					ADV_SID, SCAN_REQ_NOT);
+		if (err) {
+			goto exit;
+		}
+
+		err = ll_adv_enable(handle, 1, 0, 0);
+		if (err) {
+			goto exit;
+		}
+		printk("success.\n");
+
+		k_sleep(K_MSEC(400));
+	}
+
 	printk("Clearing all adv sets...");
 	err = ll_adv_aux_set_clear();
 	if (err != BT_HCI_ERR_CMD_DISALLOWED) {

@@ -19,6 +19,7 @@ source ${ZEPHYR_BASE}/tests/bsim/compile.source
 app=tests/bsim/bluetooth/ll/advx compile
 app=tests/bsim/bluetooth/ll/advx conf_overlay=overlay-ticker_expire_info.conf compile
 app=tests/bsim/bluetooth/ll/advx conf_overlay=overlay-scan_aux_use_chains.conf compile
+app=tests/bsim/bluetooth/ll/advx conf_overlay=overlay-aux_follow_primary.conf compile
 app=tests/bsim/bluetooth/ll/conn conf_file=prj_split.conf compile
 app=tests/bsim/bluetooth/ll/conn conf_file=prj_split_privacy.conf compile
 app=tests/bsim/bluetooth/ll/throughput compile
