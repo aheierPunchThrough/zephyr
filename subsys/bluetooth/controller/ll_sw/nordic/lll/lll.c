@@ -72,6 +72,7 @@ static inline void done_inc(void);
 #endif /* CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
 static inline bool is_done_sync(void);
 static inline struct lll_event *prepare_dequeue_iter_ready_get(uint8_t *idx);
+static inline bool prepare_dequeue_is_hard_start_pending(void);
 static inline struct lll_event *resume_enqueue(lll_is_abort_cb_t is_abort_cb,
 					       lll_abort_cb_t abort_cb, lll_prepare_cb_t resume_cb,
 					       void *param);
@@ -939,6 +940,7 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 	    (event.curr.abort_cb != NULL) ||
 	    (ready_short != NULL) ||
 	    ((ready != NULL) && (is_resume != 0U)) ||
+	    ((is_resume != 0U) && prepare_dequeue_is_hard_start_pending()) ||
 	    (IS_ENABLED(CONFIG_BT_CTLR_LLL_PREPARE_AT_MARGIN) &&
 	     (prepare_param->defer == 0U) &&
 	     (event.curr.has_margin == 0U))) {
@@ -1093,6 +1095,26 @@ static inline struct lll_event *prepare_dequeue_iter_ready_get(uint8_t *idx)
 				     (ready->prepare_param.defer != 0U)));
 
 	return ready;
+}
+
+/* Check for a deferred prepare with a fixed start time */
+static inline bool prepare_dequeue_is_hard_start_pending(void)
+{
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	struct lll_event *iter;
+	uint8_t idx = UINT8_MAX;
+
+	do {
+		iter = ull_prepare_dequeue_iter(&idx);
+	} while ((iter != NULL) &&
+		 ((iter->is_aborted != 0U) || (iter->is_resume != 0U) ||
+		  (iter->prepare_param.defer == 0U) ||
+		  (iter->prepare_param.hard_start == 0U)));
+
+	return iter != NULL;
+#else /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+	return false;
+#endif /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 }
 
 static inline struct lll_event *resume_enqueue(lll_is_abort_cb_t is_abort_cb,

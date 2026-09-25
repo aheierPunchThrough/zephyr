@@ -249,6 +249,10 @@ struct lll_prepare_param {
 #endif /* CONFIG_BT_CTLR_JIT_SCHEDULING */
 	uint8_t force:1;
 	uint8_t defer:1;
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	/* Start time is fixed by an AuxPtr already sent */
+	uint8_t hard_start:1;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 	void *param;
 };
 

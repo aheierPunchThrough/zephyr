@@ -3611,6 +3611,9 @@ static void ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 	p.remainder = remainder;
 	p.lazy = lazy;
 	p.force = force;
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	p.hard_start = lll->is_follow;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 	p.param = lll;
 	mfy.param = &p;
 

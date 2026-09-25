@@ -493,7 +493,6 @@ config BT_CTLR_ADV_AUX_FOLLOW_PRIMARY
 	bool "Schedule AUX_ADV_IND directly after the primary channel PDUs [EXPERIMENTAL]"
 	depends on BT_BROADCASTER && BT_CTLR_ADV_EXT && \
 		   (BT_CTLR_ADV_AUX_SET > 0) && \
-		   !BT_OBSERVER && \
 		   !BT_CTLR_JIT_SCHEDULING && \
 		   !BT_CTLR_LOW_LAT && \
 		   !BT_TICKER_LOW_LAT
