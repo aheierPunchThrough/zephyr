@@ -311,8 +311,14 @@ BUILD_ASSERT(TICKER_NODES <= UINT8_MAX);
  *       This value also covers the case were initiator with 1M and Coded PHY
  *       scan window is stopping the two scan tickers, stopping one scan stop
  *       ticker and starting one new ticker for establishing an ACL connection.
+ *
+ *       BT_CTLR_ADV_AUX_FOLLOW_PRIMARY needs one more, to start the
+ *       auxiliary ticker from the advertising ticker callback.
  */
-#if defined(CONFIG_BT_CTLR_ADV_EXT)
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+#define TICKER_USER_ULL_HIGH_OPS (5 + TICKER_USER_ULL_HIGH_VENDOR_OPS + \
+				  TICKER_USER_ULL_HIGH_FLASH_OPS + 1)
+#elif defined(CONFIG_BT_CTLR_ADV_EXT)
 #define TICKER_USER_ULL_HIGH_OPS (4 + TICKER_USER_ULL_HIGH_VENDOR_OPS + \
 				  TICKER_USER_ULL_HIGH_FLASH_OPS + 1)
 #else /* !CONFIG_BT_CTLR_ADV_EXT */

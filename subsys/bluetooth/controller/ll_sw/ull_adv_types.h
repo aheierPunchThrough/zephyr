@@ -84,6 +84,11 @@ struct ll_adv_aux_set {
 
 	uint16_t interval;
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	/* Ticker remainder of the following auxiliary event */
+	uint32_t follow_remainder;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 	uint16_t data_chan_id;
 	struct {
 		uint8_t data_chan_map[PDU_CHANNEL_MAP_SIZE];

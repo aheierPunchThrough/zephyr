@@ -177,11 +177,30 @@ struct lll_adv_aux {
 	uint32_t ticks_pri_pdu_offset;
 	uint32_t us_pri_pdu_offset;
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	/* Started by the primary channel event */
+	uint8_t is_follow:1;
+
+	/* Primary channel event has started */
+	uint8_t is_pri_started;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 	struct lll_adv_pdu data;
 #if defined(CONFIG_BT_CTLR_ADV_PDU_LINK)
 	struct pdu_adv     *last_pdu;
 #endif /* CONFIG_BT_CTLR_ADV_PDU_LINK */
 };
+
+static inline bool lll_adv_aux_is_follow(const struct lll_adv_aux *lll_aux)
+{
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	return lll_aux->is_follow;
+#else /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+	ARG_UNUSED(lll_aux);
+
+	return false;
+#endif /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+}
 
 struct lll_adv {
 	struct lll_hdr hdr;
@@ -237,5 +256,11 @@ struct lll_adv {
 int lll_adv_init(void);
 int lll_adv_reset(void);
 void lll_adv_prepare(void *param);
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+/* Spacing of primary channel PDUs, a multiple of the offset unit */
+uint32_t lll_adv_aux_follow_spacing_us(uint32_t pdu_us, uint8_t phy,
+				       uint8_t phy_flags);
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 extern uint16_t ull_adv_lll_handle_get(struct lll_adv *lll);

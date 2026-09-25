@@ -1348,8 +1348,7 @@ uint8_t ll_adv_enable(uint8_t enable)
 	} else
 #endif /* CONFIG_BT_PERIPHERAL */
 	{
-		const uint32_t ticks_slot = adv->ull.ticks_slot +
-					 ticks_slot_overhead;
+		uint32_t ticks_slot = adv->ull.ticks_slot + ticks_slot_overhead;
 #if (CONFIG_BT_CTLR_ADV_AUX_SET > 0)
 #if defined(CONFIG_BT_CTLR_ADV_PERIODIC)
 		uint8_t pri_idx, sec_idx;
@@ -1383,7 +1382,23 @@ uint8_t ll_adv_enable(uint8_t enable)
 		}
 #endif /* CONFIG_BT_CTLR_ADV_PERIODIC */
 
-		if (lll->aux) {
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+		if (lll->aux &&
+		    ull_adv_aux_follow_init(adv, HDR_LLL2ULL(lll->aux))) {
+			aux = HDR_LLL2ULL(lll->aux);
+
+			/* Include the auxiliary event in time reservation */
+			adv->ull.ticks_slot =
+				ull_adv_aux_follow_ticks_slot(adv, pdu_adv);
+			ticks_slot = adv->ull.ticks_slot + ticks_slot_overhead;
+
+			/* Primary channel events start the auxiliary event */
+			ull_adv_aux_follow_start(aux);
+			aux_is_started = 1U;
+		}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
+		if (lll->aux && !lll_adv_aux_is_follow(lll->aux)) {
 			struct lll_adv_aux *lll_aux = lll->aux;
 			uint32_t ticks_slot_overhead_aux;
 			uint32_t ticks_anchor_aux;
@@ -1527,7 +1542,7 @@ uint8_t ll_adv_enable(uint8_t enable)
 #endif /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
 
 #if defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
-		if (lll->aux) {
+		if (lll->aux && !lll_adv_aux_is_follow(lll->aux)) {
 			uint8_t aux_handle = ull_adv_aux_handle_get(aux);
 
 			ll_adv_ticker_ext[handle].expire_info_id = TICKER_ID_ADV_AUX_BASE +
@@ -1605,6 +1620,11 @@ uint8_t ll_adv_enable(uint8_t enable)
 failure_cleanup:
 #if (CONFIG_BT_CTLR_ADV_AUX_SET > 0)
 	if (aux_is_started) {
+		/* Auxiliary ticker is not started */
+		if (lll_adv_aux_is_follow(&aux->lll)) {
+			aux->is_started = 0U;
+		}
+
 		/* TODO: Stop extended advertising and release resources */
 	}
 
@@ -1801,6 +1821,11 @@ struct ll_adv_set *ull_adv_is_created_get(uint8_t handle)
 #if defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
 void ull_adv_aux_created(struct ll_adv_set *adv)
 {
+	/* Not used when the auxiliary event follows */
+	if (ull_adv_aux_follow_is_eligible(adv)) {
+		return;
+	}
+
 	if (adv->lll.aux && adv->is_enabled) {
 		uint8_t aux_handle = ull_adv_aux_handle_get(HDR_LLL2ULL(adv->lll.aux));
 		uint8_t handle = ull_adv_handle_get(adv);
@@ -2104,6 +2129,12 @@ void ull_adv_done(struct node_rx_event_done *done)
 
 		aux = HDR_LLL2ULL(lll_aux);
 		aux_handle = ull_adv_aux_handle_get(aux);
+
+		/* Stop primary channel events starting the auxiliary event */
+		if (lll_adv_aux_is_follow(lll_aux)) {
+			aux->is_started = 0U;
+		}
+
 		ret = ticker_stop(TICKER_INSTANCE_ID_CTLR,
 				  TICKER_USER_ID_ULL_HIGH,
 				  (TICKER_ID_ADV_AUX_BASE + aux_handle),
@@ -2116,7 +2147,8 @@ void ull_adv_done(struct node_rx_event_done *done)
 	}
 
 	LL_ASSERT_ERR((ret == TICKER_STATUS_SUCCESS) ||
-		      (ret == TICKER_STATUS_BUSY));
+		      (ret == TICKER_STATUS_BUSY) ||
+		      (lll_aux && lll_adv_aux_is_follow(lll_aux)));
 #endif /* CONFIG_BT_CTLR_ADV_EXT */
 }
 #endif /* CONFIG_BT_CTLR_ADV_EXT || CONFIG_BT_CTLR_JIT_SCHEDULING */
@@ -2180,6 +2212,13 @@ uint8_t ull_adv_time_update(struct ll_adv_set *adv, struct pdu_adv *pdu,
 	chan_cnt = util_ones_count_get(&chan_map, sizeof(chan_map));
 	time_us = adv_time_get(pdu, pdu_scan, chan_cnt, phy, phy_flags);
 	time_ticks = HAL_TICKER_US_TO_TICKS_CEIL(time_us);
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	/* Include the auxiliary event, also before it is started */
+	if (lll->aux && ull_adv_aux_follow_is_eligible(adv)) {
+		time_ticks = ull_adv_aux_follow_ticks_slot(adv, pdu);
+	}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 #if !defined(CONFIG_BT_CTLR_JIT_SCHEDULING)
 	uint32_t volatile ret_cb;
@@ -2371,9 +2410,20 @@ static void ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 		ref = ull_ref_inc(&adv->ull);
 		LL_ASSERT_DBG(ref);
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+		/* Start the auxiliary event and set the AuxPtr offset */
+		if (adv->lll.aux && ull_adv_aux_follow_is_eligible(adv)) {
+			struct ll_adv_aux_set *aux = HDR_LLL2ULL(adv->lll.aux);
+
+			if (aux->is_started) {
+				ull_adv_aux_follow_schedule(adv, ticks_at_expire);
+			}
+		}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 #if defined(CONFIG_BT_CTLR_ADV_EXT) && (CONFIG_BT_CTLR_ADV_AUX_SET > 0) && \
 	defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
-		if (adv->lll.aux) {
+		if (adv->lll.aux && !ull_adv_aux_follow_is_eligible(adv)) {
 			uint32_t ticks_to_expire;
 			uint32_t other_remainder = 0U;
 
@@ -2428,7 +2478,7 @@ static void ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 
 #if defined(CONFIG_BT_CTLR_ADV_EXT) && (CONFIG_BT_CTLR_ADV_AUX_SET > 0) && \
 	!defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
-		if (adv->lll.aux) {
+		if (adv->lll.aux && !ull_adv_aux_follow_is_eligible(adv)) {
 			ull_adv_aux_offset_get(adv);
 		}
 #endif /* CONFIG_BT_CTLR_ADV_EXT && (CONFIG_BT_CTLR_ADV_AUX_SET > 0)
@@ -2702,7 +2752,9 @@ static void ticker_stop_aux_op_cb(uint32_t status, void *param)
 	static struct mayfly mfy = {0, 0, &link, NULL, aux_disable};
 	uint32_t ret;
 
-	LL_ASSERT_ERR(status == TICKER_STATUS_SUCCESS);
+	/* Single shot auxiliary ticker may have expired */
+	LL_ASSERT_ERR((status == TICKER_STATUS_SUCCESS) ||
+		      lll_adv_aux_is_follow(((struct ll_adv_set *)param)->lll.aux));
 
 	/* Check if any pending LLL events that need to be aborted */
 	mfy.param = param;

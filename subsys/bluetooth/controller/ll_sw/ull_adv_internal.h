@@ -91,6 +91,47 @@ uint32_t ull_adv_aux_evt_init(struct ll_adv_aux_set *aux,
 uint32_t ull_adv_aux_start(struct ll_adv_aux_set *aux, uint32_t ticks_anchor,
 			   uint32_t ticks_slot_overhead);
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+/* helper function to check if auxiliary events can follow primary channel */
+bool ull_adv_aux_follow_is_eligible(const struct ll_adv_set *adv);
+
+/* helper function to initialize following auxiliary events */
+bool ull_adv_aux_follow_init(struct ll_adv_set *adv,
+			     struct ll_adv_aux_set *aux);
+
+/* helper function to start following auxiliary events */
+void ull_adv_aux_follow_start(struct ll_adv_aux_set *aux);
+
+/* helper function to get primary channel ticks_slot with auxiliary event */
+uint32_t ull_adv_aux_follow_ticks_slot(struct ll_adv_set *adv,
+				       struct pdu_adv *pdu);
+
+/* helper function to start auxiliary event from primary channel event */
+void ull_adv_aux_follow_schedule(struct ll_adv_set *adv,
+				 uint32_t ticks_at_expire);
+#else /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+static inline bool ull_adv_aux_follow_is_eligible(const struct ll_adv_set *adv)
+{
+	ARG_UNUSED(adv);
+
+	return false;
+}
+
+static inline bool ull_adv_aux_follow_init(struct ll_adv_set *adv,
+					   struct ll_adv_aux_set *aux)
+{
+	ARG_UNUSED(adv);
+	ARG_UNUSED(aux);
+
+	return false;
+}
+
+static inline void ull_adv_aux_follow_start(struct ll_adv_aux_set *aux)
+{
+	ARG_UNUSED(aux);
+}
+#endif /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 /* helper function to stop auxiliary advertising */
 int ull_adv_aux_stop(struct ll_adv_aux_set *aux);
 

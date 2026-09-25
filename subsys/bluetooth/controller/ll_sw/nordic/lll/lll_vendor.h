@@ -74,6 +74,11 @@
  */
 #define EVENT_RX_TX_TURNAROUND(phy)   150
 
+/* CPU time to set up the next primary channel PDU, used with
+ * BT_CTLR_ADV_AUX_FOLLOW_PRIMARY.
+ */
+#define EVENT_ADV_FOLLOW_HOP_CPU_US   110
+
 /* Sub-microsecond conversion macros. With current timer resolution of ~30 us
  * per tick, conversion factor is 1, and macros map 1:1 between us_frac and us.
  * On sub-microsecond tick resolution architectures, a number of bits may be

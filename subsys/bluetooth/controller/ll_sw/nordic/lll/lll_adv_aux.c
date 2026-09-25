@@ -49,15 +49,21 @@
 
 static int init_reset(void);
 static int prepare_cb(struct lll_prepare_param *p);
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+static void abort_cb(struct lll_prepare_param *prepare_param, void *param);
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 #if !defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO) || \
 	defined(CONFIG_BT_CTLR_ADV_AUX_PDU_BACK2BACK)
 static int aux_ptr_get(struct pdu_adv *pdu, struct pdu_adv_aux_ptr **aux_ptr);
 #endif /* !CONFIG_BT_TICKER_EXT_EXPIRE_INFO ||
 	* CONFIG_BT_CTLR_ADV_AUX_PDU_BACK2BACK
 	*/
-#if !defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
+#if !defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO) || \
+	defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
 static void isr_early_abort(void *param);
-#endif /* !CONFIG_BT_TICKER_EXT_EXPIRE_INFO */
+#endif /* !CONFIG_BT_TICKER_EXT_EXPIRE_INFO ||
+	* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY
+	*/
 static void isr_done(void *param);
 #if defined(CONFIG_BT_CTLR_ADV_AUX_PDU_BACK2BACK)
 static void isr_tx_chain(void *param);
@@ -101,12 +107,21 @@ int lll_adv_aux_reset(void)
 
 void lll_adv_aux_prepare(void *param)
 {
+	lll_abort_cb_t abort_fn = lll_abort_cb;
 	int err;
 
 	err = lll_hfclock_on();
 	LL_ASSERT_ERR(err >= 0);
 
-	err = lll_prepare(lll_is_abort_cb, lll_abort_cb, prepare_cb, 0, param);
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	struct lll_prepare_param *p = param;
+
+	if (lll_adv_aux_is_follow(p->param)) {
+		abort_fn = abort_cb;
+	}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
+	err = lll_prepare(lll_is_abort_cb, abort_fn, prepare_cb, 0, param);
 	LL_ASSERT_ERR(!err || err == -EINPROGRESS);
 }
 
@@ -144,6 +159,18 @@ static int prepare_cb(struct lll_prepare_param *p)
 	upd = 0U;
 	sec_pdu = lll_adv_aux_data_latest_get(lll, &upd);
 	LL_ASSERT_DBG(sec_pdu);
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	/* Skip if the primary channel event did not start */
+	if (lll_adv_aux_is_follow(lll) && !lll->is_pri_started) {
+		radio_isr_set(isr_early_abort, lll);
+		radio_disable();
+
+		return 0;
+	}
+
+	lll->is_pri_started = 0U;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 #if defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
 	struct ll_adv_aux_set *aux;
@@ -398,7 +425,8 @@ static int aux_ptr_get(struct pdu_adv *pdu, struct pdu_adv_aux_ptr **aux_ptr)
 	* CONFIG_BT_CTLR_ADV_AUX_PDU_BACK2BACK
 	*/
 
-#if !defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
+#if !defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO) || \
+	defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
 static void isr_race(void *param)
 {
 	radio_status_reset();
@@ -423,7 +451,42 @@ static void isr_early_abort(void *param)
 
 	lll_done(NULL);
 }
-#endif /* !CONFIG_BT_TICKER_EXT_EXPIRE_INFO */
+#endif /* !CONFIG_BT_TICKER_EXT_EXPIRE_INFO ||
+	* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY
+	*/
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+/* Same as lll_abort_cb(), plus the auxiliary done extra type */
+static void abort_cb(struct lll_prepare_param *prepare_param, void *param)
+{
+	struct event_done_extra *extra;
+	int err;
+
+	/* NOTE: This is not a prepare being cancelled */
+	if (!prepare_param) {
+		/* Perform event abort here.
+		 * After event has been cleanly aborted, clean up resources
+		 * and dispatch event done.
+		 */
+		radio_isr_set(isr_done, param);
+		radio_disable();
+		return;
+	}
+
+	/* NOTE: Else clean the top half preparations of the aborted event
+	 * currently in preparation pipeline.
+	 */
+	err = lll_hfclock_off();
+	LL_ASSERT_ERR(err >= 0);
+
+	((struct lll_adv_aux *)param)->is_pri_started = 0U;
+
+	extra = ull_done_extra_type_set(EVENT_DONE_EXTRA_TYPE_ADV_AUX);
+	LL_ASSERT_ERR(extra);
+
+	lll_done(param);
+}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 static void isr_done(void *param)
 {

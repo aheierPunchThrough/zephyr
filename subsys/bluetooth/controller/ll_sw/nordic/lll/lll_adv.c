@@ -109,6 +109,12 @@ static inline bool isr_rx_ci_adva_check(uint8_t tx_addr, uint8_t *addr,
 #define BT_CTLR_ADV_SYNC_SET 0
 #endif
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+/* Radio start of the first and the current primary channel PDU */
+static uint32_t follow_first_us;
+static uint32_t follow_last_us;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 #define PDU_MEM_SIZE       PDU_ADV_MEM_SIZE
 
 /* AD data and Scan Response Data need 2 PDU buffers each in the double buffer
@@ -210,6 +216,20 @@ static struct {
 static MFIFO_DEFINE(extra_data_free, sizeof(void *), EXTRA_DATA_MEM_FIFO_COUNT);
 static struct k_sem sem_extra_data_free;
 #endif /* CONFIG_BT_CTLR_ADV_EXT_PDU_EXTRA_DATA_MEMORY */
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+uint32_t lll_adv_aux_follow_spacing_us(uint32_t pdu_us, uint8_t phy,
+				       uint8_t phy_flags)
+{
+	uint32_t hop_us;
+
+	hop_us = MAX(EVENT_RX_TX_TURNAROUND(phy),
+		     radio_tx_ready_delay_get(phy, phy_flags) +
+		     EVENT_ADV_FOLLOW_HOP_CPU_US);
+
+	return ROUND_UP(pdu_us + hop_us, OFFS_UNIT_30_US);
+}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 int lll_adv_init(void)
 {
@@ -1023,6 +1043,11 @@ static int prepare_cb(struct lll_prepare_param *p)
 	remainder = p->remainder;
 	start_us = radio_tmr_start(1, ticks_at_start, remainder);
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	follow_first_us = start_us;
+	follow_last_us = start_us;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 	/* capture end of Tx-ed PDU, used to calculate HCTO. */
 	radio_tmr_end_capture();
 
@@ -1051,8 +1076,11 @@ static int prepare_cb(struct lll_prepare_param *p)
 	}
 #endif /* CONFIG_BT_CTLR_XTAL_ADVANCED */
 
-#if defined(CONFIG_BT_CTLR_ADV_EXT) && defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
-	if (lll->aux) {
+#if defined(CONFIG_BT_CTLR_ADV_EXT) && \
+	(defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO) || \
+	 defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY))
+	if (lll->aux && (IS_ENABLED(CONFIG_BT_TICKER_EXT_EXPIRE_INFO) ||
+			 lll_adv_aux_is_follow(lll->aux))) {
 		/* fill in aux ptr in pdu */
 		ull_adv_aux_lll_auxptr_fill(pdu, lll);
 
@@ -1061,9 +1089,19 @@ static int prepare_cb(struct lll_prepare_param *p)
 		 * microsecond precision, hence compensate for the higher start_us value
 		 * captured at radio start of the first primary channel PDU.
 		 */
-		lll->aux->ticks_pri_pdu_offset += 1U;
+		if (!lll_adv_aux_is_follow(lll->aux)) {
+			lll->aux->ticks_pri_pdu_offset += 1U;
+		}
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+		if (lll_adv_aux_is_follow(lll->aux)) {
+			lll->aux->is_pri_started = 1U;
+		}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 	}
-#endif
+#endif /* CONFIG_BT_CTLR_ADV_EXT &&
+	* (CONFIG_BT_TICKER_EXT_EXPIRE_INFO || CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	*/
 
 	ret = lll_prepare_done(lll);
 	LL_ASSERT_ERR(!ret);
@@ -1097,6 +1135,12 @@ static int is_abort_cb(void *next, void *curr, lll_prepare_cb_t *resume_cb)
 	/* TODO: prio check */
 	if (next != curr) {
 		if (0) {
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+		} else if ((next == ((struct lll_adv *)curr)->aux) &&
+			   lll_adv_aux_is_follow(next)) {
+			/* Defer the auxiliary event of this advertising event */
+			return -EBUSY;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 #if defined(CONFIG_BT_PERIPHERAL)
 		} else if (lll->is_hdcd) {
 			int err;
@@ -1349,17 +1393,51 @@ static void isr_done(void *param)
 		}
 
 #if defined(HAL_RADIO_GPIO_HAVE_PA_PIN) || defined(CONFIG_BT_CTLR_ADV_EXT)
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+		if (lll->aux && lll_adv_aux_is_follow(lll->aux)) {
+			uint32_t pdu_us;
+
+			pdu_us = PDU_AC_US(pdu->len, lll->phy_p, lll->phy_flags);
+
+			/* Fixed spacing, radio_tmr_start_us() adds 1 us */
+			follow_last_us +=
+				lll_adv_aux_follow_spacing_us(pdu_us, lll->phy_p,
+							      lll->phy_flags);
+			start_us = radio_tmr_start_us(1, follow_last_us - 1U);
+
+			/* No room for PDU and T_MAFS before AUX_ADV_IND, close the event */
+			if (!follow_aux_offset_is_valid(lll->aux, start_us, pdu_us)) {
+				radio_isr_set(isr_abort, lll);
+				radio_disable();
+
+				return;
+			}
+		} else {
+			start_us = radio_tmr_start_now(1);
+		}
+#else /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 		start_us = radio_tmr_start_now(1);
+#endif /* !CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 #if defined(CONFIG_BT_CTLR_ADV_EXT)
 		struct lll_adv_aux *lll_aux;
+		uint32_t aux_start_us;
 
 		lll_aux = lll->aux;
+		aux_start_us = start_us;
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+		/* Time since the first primary channel PDU */
+		if (lll_aux && lll_adv_aux_is_follow(lll_aux)) {
+			aux_start_us -= follow_first_us;
+		}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 		if (lll_aux) {
 			(void)ull_adv_aux_lll_offset_fill(pdu,
 							  lll_aux->ticks_pri_pdu_offset,
 							  lll_aux->us_pri_pdu_offset,
-							  start_us);
+							  aux_start_us);
 		}
 #else /* !CONFIG_BT_CTLR_ADV_EXT */
 		ARG_UNUSED(pdu);
@@ -1463,6 +1541,23 @@ static void isr_abort(void *param)
 	/* Current LLL radio event is done*/
 	lll_isr_cleanup(param);
 }
+
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+static bool follow_aux_offset_is_valid(const struct lll_adv_aux *lll_aux,
+				       uint32_t start_us, uint32_t pdu_us)
+{
+	uint32_t elapsed_us;
+	uint32_t offset_us;
+
+	offset_us = HAL_TICKER_TICKS_TO_US(lll_aux->ticks_pri_pdu_offset) +
+		    lll_aux->us_pri_pdu_offset;
+	elapsed_us = start_us - follow_first_us;
+
+	return (elapsed_us < offset_us) &&
+	       (ROUND_DOWN(offset_us - elapsed_us, OFFS_UNIT_30_US) >=
+		(pdu_us + EVENT_MAFS_MIN_US));
+}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 #if defined(CONFIG_BT_PERIPHERAL)
 static void isr_abort_all(void *param)

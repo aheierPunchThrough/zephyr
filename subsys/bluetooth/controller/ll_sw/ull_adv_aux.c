@@ -64,6 +64,12 @@ static void mfy_aux_offset_get(void *param);
 static void ticker_op_cb(uint32_t status, void *param);
 #endif /* !CONFIG_BT_TICKER_EXT_EXPIRE_INFO */
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+static uint32_t aux_follow_offset_us(const struct lll_adv *lll,
+				     const struct pdu_adv *pdu);
+static void ticker_follow_op_cb(uint32_t status, void *param);
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 static void ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 		      uint32_t remainder, uint16_t lazy, uint8_t force,
 		      void *param);
@@ -116,6 +122,7 @@ uint8_t ll_adv_aux_ad_data_set(uint8_t handle, uint8_t op, uint8_t frag_pref,
 			 ULL_ADV_HDR_DATA_LEN_SIZE];
 	uint8_t pri_idx, sec_idx;
 	struct ll_adv_set *adv;
+	bool is_follow_init;
 	uint8_t *val_ptr;
 	uint8_t err;
 
@@ -647,6 +654,7 @@ uint8_t ll_adv_aux_ad_data_set(uint8_t handle, uint8_t op, uint8_t frag_pref,
 	}
 #endif /* CONFIG_BT_CTLR_ADV_AUX_PDU_LINK */
 
+	is_follow_init = false;
 	if (adv->is_enabled) {
 		struct ll_adv_aux_set *aux;
 		struct pdu_adv *chan_res_pdu;
@@ -654,6 +662,11 @@ uint8_t ll_adv_aux_ad_data_set(uint8_t handle, uint8_t op, uint8_t frag_pref,
 
 		aux = HDR_LLL2ULL(adv->lll.aux);
 		if (!aux->is_started) {
+			/* Started below, after the PDU with AuxPtr is enqueued */
+			is_follow_init = ull_adv_aux_follow_init(adv, aux);
+		}
+
+		if (!aux->is_started && !is_follow_init) {
 			uint32_t ticks_slot_overhead;
 			uint32_t ticks_anchor;
 			uint32_t ret;
@@ -717,6 +730,10 @@ uint8_t ll_adv_aux_ad_data_set(uint8_t handle, uint8_t op, uint8_t frag_pref,
 	    op == BT_HCI_LE_EXT_ADV_OP_COMPLETE_DATA ||
 	    op == BT_HCI_LE_EXT_ADV_OP_UNCHANGED_DATA) {
 		lll_adv_data_enqueue(&adv->lll, pri_idx);
+	}
+
+	if (is_follow_init) {
+		ull_adv_aux_follow_start(HDR_LLL2ULL(adv->lll.aux));
 	}
 
 	/* Check if Extended Advertising Data is complete */
@@ -2657,6 +2674,118 @@ uint32_t ull_adv_aux_start(struct ll_adv_aux_set *aux, uint32_t ticks_anchor,
 	return ret;
 }
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+bool ull_adv_aux_follow_is_eligible(const struct ll_adv_set *adv)
+{
+	/* Every advertising event needs to have an AUX_ADV_IND */
+	return adv->max_skip == 0U;
+}
+
+bool ull_adv_aux_follow_init(struct ll_adv_set *adv,
+			     struct ll_adv_aux_set *aux)
+{
+	/* Set in ull_adv_aux_follow_start() */
+	aux->lll.is_follow = 0U;
+
+	if (!ull_adv_aux_follow_is_eligible(adv)) {
+		return false;
+	}
+
+	ull_hdr_init(&aux->ull);
+	aux->ull.ticks_slot = HAL_TICKER_US_TO_TICKS_CEIL(aux_time_min_get(aux));
+
+	return true;
+}
+
+void ull_adv_aux_follow_start(struct ll_adv_aux_set *aux)
+{
+	/* Set is_follow before primary channel events see is_started */
+	aux->lll.is_follow = 1U;
+	cpu_dmb();
+	aux->is_started = 1U;
+}
+
+uint32_t ull_adv_aux_follow_ticks_slot(struct ll_adv_set *adv,
+				       struct pdu_adv *pdu)
+{
+	struct ll_adv_aux_set *aux = HDR_LLL2ULL(adv->lll.aux);
+
+	/* Primary channel PDUs up to AUX_ADV_IND, and the auxiliary event */
+	return HAL_TICKER_US_TO_TICKS_CEIL(aux_follow_offset_us(&adv->lll,
+								 pdu)) +
+	       aux->ull.ticks_slot;
+}
+
+void ull_adv_aux_follow_schedule(struct ll_adv_set *adv,
+				 uint32_t ticks_at_expire)
+{
+	struct lll_adv_aux *lll_aux;
+	struct ll_adv_aux_set *aux;
+	uint32_t offset_us;
+	uint32_t ret;
+
+	lll_aux = adv->lll.aux;
+	aux = HDR_LLL2ULL(lll_aux);
+
+	/* Process channel map update, if any */
+	if (aux->chm_first != aux->chm_last) {
+		/* Use channelMapNew */
+		aux->chm_first = aux->chm_last;
+	}
+
+	offset_us = aux_follow_offset_us(&adv->lll,
+					 lll_adv_data_latest_peek(&adv->lll));
+
+	/* Offset used in the AuxPtr of primary channel PDUs */
+	lll_aux->ticks_pri_pdu_offset = HAL_TICKER_US_TO_TICKS(offset_us);
+	lll_aux->us_pri_pdu_offset = offset_us -
+		HAL_TICKER_TICKS_TO_US(lll_aux->ticks_pri_pdu_offset);
+
+	/* Start 1 us late, as radio start rounds down to a microsecond */
+	offset_us += 1U;
+
+	/* No first expiry remainder in ticker_start(), ticker_cb() applies it */
+	aux->follow_remainder = HAL_TICKER_REMAINDER(offset_us);
+
+	/* Time reservation is included in the primary channel event */
+	ret = ticker_start(TICKER_INSTANCE_ID_CTLR, TICKER_USER_ID_ULL_HIGH,
+			   (TICKER_ID_ADV_AUX_BASE + ull_adv_aux_handle_get(aux)),
+			   ticks_at_expire, HAL_TICKER_US_TO_TICKS(offset_us),
+			   TICKER_NULL_PERIOD, TICKER_NULL_REMAINDER,
+			   TICKER_NULL_LAZY, TICKER_NULL_SLOT,
+			   ticker_cb, aux,
+			   ticker_follow_op_cb, aux);
+	LL_ASSERT_ERR((ret == TICKER_STATUS_SUCCESS) ||
+		      (ret == TICKER_STATUS_BUSY));
+}
+
+/* Offset from the first primary channel PDU to AUX_ADV_IND */
+static uint32_t aux_follow_offset_us(const struct lll_adv *lll,
+				     const struct pdu_adv *pdu)
+{
+	uint8_t chan_map = lll->chan_map;
+	uint8_t chan_cnt;
+	uint32_t pdu_us;
+
+	chan_cnt = util_ones_count_get(&chan_map, sizeof(chan_map));
+	pdu_us = PDU_AC_US(pdu->len, lll->phy_p, lll->phy_flags);
+
+	/* Multiple of the offset unit, so AuxPtr needs no rounding */
+	return (lll_adv_aux_follow_spacing_us(pdu_us, lll->phy_p,
+					      lll->phy_flags) *
+		(chan_cnt - 1U)) +
+	       ROUND_UP(pdu_us + MAX(EVENT_MAFS_MIN_US,
+				     CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY_AFS),
+			OFFS_UNIT_30_US);
+}
+
+static void ticker_follow_op_cb(uint32_t status, void *param)
+{
+	LL_ASSERT_ERR((status == TICKER_STATUS_SUCCESS) ||
+		      (param == ull_disable_mark_get()));
+}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 int ull_adv_aux_stop(struct ll_adv_aux_set *aux)
 {
 	uint8_t aux_handle;
@@ -2666,6 +2795,13 @@ int ull_adv_aux_stop(struct ll_adv_aux_set *aux)
 
 	err = ull_ticker_stop_with_mark(TICKER_ID_ADV_AUX_BASE + aux_handle,
 					aux, &aux->lll);
+	if ((err == -EALREADY) && lll_adv_aux_is_follow(&aux->lll)) {
+		/* Ticker has expired, wait for a pending LLL event */
+		err = ull_disable(&aux->lll);
+		if (err == -EALREADY) {
+			err = 0;
+		}
+	}
 	LL_ASSERT_INFO2(err == 0 || err == -EALREADY, aux_handle, err);
 	if (err) {
 		return err;
@@ -2691,6 +2827,9 @@ struct ll_adv_aux_set *ull_adv_aux_acquire(struct lll_adv *lll)
 	lll_aux = &aux->lll;
 	lll->aux = lll_aux;
 	lll_aux->adv = lll;
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	lll_aux->is_follow = 0U;
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
 
 	lll_adv_data_reset(&lll_aux->data);
 	err = lll_adv_aux_data_init(&lll_aux->data);
@@ -2778,6 +2917,12 @@ struct pdu_adv_aux_ptr *ull_adv_aux_lll_offset_fill(struct pdu_adv *pdu,
 
 	pri_com_hdr = (void *)&pdu->adv_ext_ind;
 	h = (void *)pri_com_hdr->ext_hdr_adv_data;
+
+	/* PDU may not have an AuxPtr yet */
+	if (!pri_com_hdr->ext_hdr_len || !h->aux_ptr) {
+		return NULL;
+	}
+
 	ptr = h->data;
 
 	/* traverse through adv_addr, if present */
@@ -3100,6 +3245,24 @@ static uint8_t aux_time_update(struct ll_adv_aux_set *aux, struct pdu_adv *pdu,
 	time_us = aux_time_min_get(aux);
 	time_ticks = HAL_TICKER_US_TO_TICKS_CEIL(time_us);
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	if (aux->lll.is_follow) {
+		struct ll_adv_set *adv = HDR_LLL2ULL(aux->lll.adv);
+		uint32_t ticks_slot_prev = aux->ull.ticks_slot;
+		uint8_t err;
+
+		/* Update primary channel event time reservation instead */
+		aux->ull.ticks_slot = time_ticks;
+		err = ull_adv_time_update(adv, lll_adv_data_peek(&adv->lll),
+					  NULL);
+		if (err) {
+			aux->ull.ticks_slot = ticks_slot_prev;
+		}
+
+		return err;
+	}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 #if !defined(CONFIG_BT_CTLR_JIT_SCHEDULING)
 	uint32_t volatile ret_cb;
 	uint32_t ticks_minus;
@@ -3134,7 +3297,8 @@ static uint8_t aux_time_update(struct ll_adv_aux_set *aux, struct pdu_adv *pdu,
 	return BT_HCI_ERR_SUCCESS;
 }
 
-#if defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
+#if defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO) || \
+	defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
 void ull_adv_aux_lll_auxptr_fill(struct pdu_adv *pdu, struct lll_adv *adv)
 {
 	struct lll_adv_aux *lll_aux = adv->aux;
@@ -3161,7 +3325,8 @@ void ull_adv_aux_lll_auxptr_fill(struct pdu_adv *pdu, struct lll_adv *adv)
 	pdu_us = PDU_AC_US(pdu->len, adv->phy_p, adv->phy_flags);
 	offset_us = HAL_TICKER_TICKS_TO_US(lll_aux->ticks_pri_pdu_offset) +
 		    lll_aux->us_pri_pdu_offset;
-	if (((offset_us / OFFS_UNIT_30_US) * OFFS_UNIT_30_US) < (EVENT_MAFS_MIN_US + pdu_us)) {
+	if (!lll_adv_aux_is_follow(lll_aux) &&
+	    (((offset_us / OFFS_UNIT_30_US) * OFFS_UNIT_30_US) < (EVENT_MAFS_MIN_US + pdu_us))) {
 		uint32_t interval_us;
 
 		/* Offset too small, point to next aux packet instead */
@@ -3176,7 +3341,9 @@ void ull_adv_aux_lll_auxptr_fill(struct pdu_adv *pdu, struct lll_adv *adv)
 	/* Fill the aux offset */
 	aux_ptr = ull_adv_aux_lll_offset_fill(pdu, lll_aux->ticks_pri_pdu_offset,
 					      lll_aux->us_pri_pdu_offset, 0U);
-
+	if (!aux_ptr) {
+		return;
+	}
 
 	/* Calculate and fill the radio channel to use */
 	data_chan_map = aux->chm[aux->chm_first].data_chan_map;
@@ -3185,8 +3352,11 @@ void ull_adv_aux_lll_auxptr_fill(struct pdu_adv *pdu, struct lll_adv *adv)
 					   aux->data_chan_id,
 					   data_chan_map, data_chan_count);
 }
+#endif /* CONFIG_BT_TICKER_EXT_EXPIRE_INFO ||
+	* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY
+	*/
 
-#else /* !CONFIG_BT_TICKER_EXT_EXPIRE_INFO */
+#if !defined(CONFIG_BT_TICKER_EXT_EXPIRE_INFO)
 
 /* Maximum retries when ticks_current can change; for example, when 3 extended advertising sets
  * configured, and 1 advertising set is calculating the aux_offset, at least 3 auxiliary advertising
@@ -3314,6 +3484,9 @@ static void mfy_aux_offset_get(void *param)
 	/* Fill the aux offset */
 	aux_ptr = ull_adv_aux_lll_offset_fill(pdu, lll_aux->ticks_pri_pdu_offset,
 					      lll_aux->us_pri_pdu_offset, 0U);
+	if (!aux_ptr) {
+		return;
+	}
 
 	/* NOTE: as first primary channel PDU does not use remainder, the packet
 	 * timer is started one tick in advance to start the radio with
@@ -3376,6 +3549,12 @@ static void ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 
 	lll = &aux->lll;
 
+#if defined(CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY)
+	if (lll->is_follow) {
+		remainder = aux->follow_remainder;
+	}
+#endif /* CONFIG_BT_CTLR_ADV_AUX_FOLLOW_PRIMARY */
+
 	/* Increment prepare reference count */
 	ref = ull_ref_inc(&aux->ull);
 	LL_ASSERT_DBG(ref);
@@ -3421,7 +3600,7 @@ static void ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 #endif /* CONFIG_BT_CTLR_ADV_PERIODIC */
 
 	/* Process channel map update, if any */
-	if (aux->chm_first != aux->chm_last) {
+	if ((aux->chm_first != aux->chm_last) && !lll_adv_aux_is_follow(lll)) {
 		/* Use channelMapNew */
 		aux->chm_first = aux->chm_last;
 	}
