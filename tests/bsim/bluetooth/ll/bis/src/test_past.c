@@ -11,6 +11,8 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/types.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 #include <zephyr/kernel.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
@@ -55,6 +57,23 @@ static K_SEM_DEFINE(sem_is_conn, 0, 1);
 #define K_SEM_TIMEOUT    K_MSEC(20000)
 
 struct bt_le_per_adv_sync *default_sync;
+
+/* Optional, in 1.25 ms units:
+ * -argstest conn_interval=<n> per_adv_interval=<n>
+ */
+static uint16_t conn_interval;
+static uint16_t per_adv_interval;
+
+static void test_past_args(int argc, char *argv[])
+{
+	for (int i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "conn_interval=", 14) == 0) {
+			conn_interval = strtoul(&argv[i][14], NULL, 0);
+		} else if (strncmp(argv[i], "per_adv_interval=", 17) == 0) {
+			per_adv_interval = strtoul(&argv[i][17], NULL, 0);
+		}
+	}
+}
 
 static void connected(struct bt_conn *conn, uint8_t conn_err)
 {
@@ -101,6 +120,10 @@ static bool eir_found(struct bt_data *data, void *user_data)
 			}
 
 			param = BT_LE_CONN_PARAM_DEFAULT;
+			if (conn_interval) {
+				param->interval_min = conn_interval;
+				param->interval_max = conn_interval;
+			}
 			err = bt_conn_le_create(addr, BT_CONN_LE_CREATE_CONN,
 						param, &default_conn);
 			if (err) {
@@ -146,6 +169,7 @@ static struct bt_conn_cb conn_callbacks = {
 
 static void setup_ext_adv(struct bt_le_ext_adv **adv)
 {
+	struct bt_le_per_adv_param *per_adv_param;
 	int err;
 
 	printk("Create advertising set...");
@@ -157,7 +181,12 @@ static void setup_ext_adv(struct bt_le_ext_adv **adv)
 	printk("success.\n");
 
 	printk("Setting Periodic Advertising parameters...");
-	err = bt_le_per_adv_set_param(*adv, BT_LE_PER_ADV_DEFAULT);
+	per_adv_param = BT_LE_PER_ADV_DEFAULT;
+	if (per_adv_interval) {
+		per_adv_param->interval_min = per_adv_interval;
+		per_adv_param->interval_max = per_adv_interval;
+	}
+	err = bt_le_per_adv_set_param(*adv, per_adv_param);
 	if (err) {
 		FAIL("Failed to set periodic advertising parameters (err %d)\n",
 			 err);
@@ -719,6 +748,7 @@ static const struct bst_test_instance test_def[] = {
 		.test_id = "broadcast_pa",
 		.test_descr = "Periodic Advertisement broadcaster",
 		.test_pre_init_f = test_past_init,
+		.test_args_f = test_past_args,
 		.test_tick_f = test_past_tick,
 		.test_main_f = test_broadcast_main
 	},
@@ -727,6 +757,7 @@ static const struct bst_test_instance test_def[] = {
 		.test_descr = "Peripheral device, waiting for connection "
 		"and then waits for receiving PAST, then syncs to PA",
 		.test_pre_init_f = test_past_init,
+		.test_args_f = test_past_args,
 		.test_tick_f = test_past_tick,
 		.test_main_f = test_past_recv_main
 	},
@@ -736,6 +767,7 @@ static const struct bst_test_instance test_def[] = {
 		"and then waits for receiving PAST with the default PAST parameter set,"
 		" then syncs to PA",
 		.test_pre_init_f = test_past_init,
+		.test_args_f = test_past_args,
 		.test_tick_f = test_past_tick,
 		.test_main_f = test_past_recv_main_default_param
 	},
@@ -744,6 +776,7 @@ static const struct bst_test_instance test_def[] = {
 		.test_descr = "Central that syncs to PA from broadcaster,"
 		"connects to peripheral and sends PAST",
 		.test_pre_init_f = test_past_init,
+		.test_args_f = test_past_args,
 		.test_tick_f = test_past_tick,
 		.test_main_f = test_past_send_main
 	},
@@ -751,6 +784,7 @@ static const struct bst_test_instance test_def[] = {
 		.test_id = "broadcast_past_sender",
 		.test_descr = "PA broadcaster, connects and sends PAST to peripheral",
 		.test_pre_init_f = test_past_init,
+		.test_args_f = test_past_args,
 		.test_tick_f = test_past_tick,
 		.test_main_f = test_broadcast_past_sender_main
 	},
